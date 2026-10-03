@@ -25,26 +25,21 @@ async function migrate() {
 
     await client.connect();
 
+    // Create migration tracking table first
+    await client.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      filename VARCHAR(255) PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
     for (const file of files) {
-        const alreadyApplied = await client.query(
+        const result = await client.query(
             'SELECT 1 FROM schema_migrations WHERE filename = $1',
             [file]
-        ).catch(async (error) => {
-            if (error.code === '42P01') {
-                await client.query(`
-          CREATE TABLE IF NOT EXISTS schema_migrations (
-            filename VARCHAR(255) PRIMARY KEY,
-            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-          );
-        `);
+        );
 
-                return { rowCount: 0 };
-            }
-
-            throw error;
-        });
-
-        if (alreadyApplied.rowCount > 0) {
+        if (result.rowCount > 0) {
             console.log(`Skipping ${file} - already applied`);
             continue;
         }
@@ -56,9 +51,9 @@ async function migrate() {
             'utf8'
         );
 
-        try {
-            await client.query('BEGIN');
+        await client.query('BEGIN');
 
+        try {
             await client.query(sql);
 
             await client.query(
@@ -70,12 +65,7 @@ async function migrate() {
 
             console.log(`Applied ${file}`);
         } catch (error) {
-            try {
-                await client.query('ROLLBACK');
-            } catch (rollbackError) {
-                console.error('Rollback failed:', rollbackError.message);
-            }
-
+            await client.query('ROLLBACK');
             throw error;
         }
     }
