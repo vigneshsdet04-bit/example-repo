@@ -70,7 +70,7 @@ async function migrate() {
 
         console.log('Database migration completed successfully.');
     } finally {
-        await client.end().catch(() => { });
+        client.end();
     }
 }
 
