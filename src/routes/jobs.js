@@ -2,39 +2,47 @@
 
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const store = require('../store');
+const pool = require('../config/db');
 
 const router = express.Router();
 
-// POST /jobs
-router.post('/', (req, res, next) => {
+router.post('/', async (req, res, next) => {
     try {
-        const payload = req.body;
+        const { userId, type, payload } = req.body;
 
-        if (!payload || Object.keys(payload).length === 0) {
-            const err = new Error('Request body must contain a job payload.');
-            err.status = 400;
-            return next(err);
+        if (!type) {
+            return res.status(400).json({
+                error: 'type is required',
+            });
         }
 
-        const job = {
-            id: uuidv4(),
-            status: 'queued',
-            payload,
-            // Will be sent to RabbitMQ queue later
-            createdAt: new Date().toISOString(),
-        };
+        const id = uuidv4();
 
-        store.jobs.push(job);
-        return res.status(201).json(job);
-    } catch (err) {
-        return next(err);
+        const result = await pool.query(
+            `
+      INSERT INTO jobs
+      (
+        id,
+        user_id,
+        type,
+        status,
+        payload
+      )
+      VALUES ($1, $2, $3, 'queued', $4)
+      RETURNING *
+      `,
+            [
+                id,
+                userId || null,
+                type,
+                payload || null,
+            ]
+        );
+
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        next(error);
     }
-});
-
-// GET /jobs — optional: list all jobs for inspection
-router.get('/', (req, res) => {
-    res.json({ count: store.jobs.length, jobs: store.jobs });
 });
 
 module.exports = router;

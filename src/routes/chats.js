@@ -2,108 +2,101 @@
 
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const store = require('../store');
+const pool = require('../config/db');
 
 const router = express.Router();
 
-// POST /chats
-router.post('/', (req, res, next) => {
+// Create chat
+router.post('/', async (req, res, next) => {
     try {
         const { userId, title } = req.body;
 
-        if (!userId || !title) {
-            const err = new Error('Fields "userId" and "title" are required.');
-            err.status = 400;
-            return next(err);
+        if (!userId) {
+            return res.status(400).json({
+                error: 'userId is required',
+            });
         }
 
-        const userExists = store.users.find((u) => u.id === userId);
-        if (!userExists) {
-            const err = new Error(`User with id "${userId}" not found.`);
-            err.status = 404;
-            return next(err);
-        }
+        const id = uuidv4();
 
-        const chat = {
-            id: uuidv4(),
-            userId,
-            title: title.trim(),
-            createdAt: new Date().toISOString(),
-        };
+        const result = await pool.query(
+            `
+      INSERT INTO chats (id, user_id, title)
+      VALUES ($1, $2, $3)
+      RETURNING *
+      `,
+            [id, userId, title || null]
+        );
 
-        store.chats.push(chat);
-        return res.status(201).json(chat);
-    } catch (err) {
-        return next(err);
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        next(error);
     }
 });
 
-// GET /chats/:userId
-router.get('/:userId', (req, res, next) => {
+// Get chats for user
+router.get('/:userId', async (req, res, next) => {
     try {
-        const { userId } = req.params;
-        const userExists = store.users.find((u) => u.id === userId);
-        if (!userExists) {
-            const err = new Error(`User with id "${userId}" not found.`);
-            err.status = 404;
-            return next(err);
-        }
+        const result = await pool.query(
+            `
+      SELECT *
+      FROM chats
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      `,
+            [req.params.userId]
+        );
 
-        const chats = store.chats.filter((c) => c.userId === userId);
-        return res.json({ count: chats.length, chats });
-    } catch (err) {
-        return next(err);
+        res.json(result.rows);
+    } catch (error) {
+        next(error);
     }
 });
 
-// POST /chats/:chatId/messages
-router.post('/:chatId/messages', (req, res, next) => {
+// Add message
+router.post('/:chatId/messages', async (req, res, next) => {
     try {
-        const { chatId } = req.params;
-        const { message } = req.body;
+        const { role, content } = req.body;
 
-        if (!message) {
-            const err = new Error('Field "message" is required.');
-            err.status = 400;
-            return next(err);
+        if (!role || !content) {
+            return res.status(400).json({
+                error: 'role and content are required',
+            });
         }
 
-        const chat = store.chats.find((c) => c.id === chatId);
-        if (!chat) {
-            const err = new Error(`Chat with id "${chatId}" not found.`);
-            err.status = 404;
-            return next(err);
-        }
+        const id = uuidv4();
 
-        const msg = {
-            id: uuidv4(),
-            chatId,
-            message: message.trim(),
-            createdAt: new Date().toISOString(),
-        };
+        const result = await pool.query(
+            `
+      INSERT INTO messages (id, chat_id, role, content)
+      VALUES ($1, $2, $3, $4)
+      RETURNING *
+      `,
+            [id, req.params.chatId, role, content]
+        );
 
-        store.messages.push(msg);
-        return res.status(201).json(msg);
-    } catch (err) {
-        return next(err);
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        next(error);
     }
 });
 
-// GET /chats/:chatId/messages
-router.get('/:chatId/messages', (req, res, next) => {
+// Get messages
+router.get('/:chatId/messages', async (req, res, next) => {
     try {
-        const { chatId } = req.params;
-        const chat = store.chats.find((c) => c.id === chatId);
-        if (!chat) {
-            const err = new Error(`Chat with id "${chatId}" not found.`);
-            err.status = 404;
-            return next(err);
-        }
+        const result = await pool.query(
+            `
+      SELECT *
+      FROM messages
+      WHERE chat_id = $1
+      ORDER BY created_at ASC
+      `,
+            [req.params.chatId]
+        );
 
-        const messages = store.messages.filter((m) => m.chatId === chatId);
-        return res.json({ count: messages.length, messages });
-    } catch (err) {
-        return next(err);
+        res.json(result.rows);
+    } catch (error) {
+        next(error);
     }
 });
 

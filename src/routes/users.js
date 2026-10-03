@@ -2,55 +2,59 @@
 
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const store = require('../store');
+const pool = require('../config/db');
 
 const router = express.Router();
 
-// POST /users
-router.post('/', (req, res, next) => {
+// Create user
+router.post('/', async (req, res, next) => {
     try {
-        const { name, email } = req.body;
+        const { email, name } = req.body;
 
-        if (!name || !email) {
-            const err = new Error('Fields "name" and "email" are required.');
-            err.status = 400;
-            return next(err);
+        if (!email) {
+            return res.status(400).json({
+                error: 'email is required',
+            });
         }
 
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(email)) {
-            const err = new Error('Invalid email format.');
-            err.status = 400;
-            return next(err);
+        const id = uuidv4();
+
+        const result = await pool.query(
+            `
+      INSERT INTO users (id, email, name)
+      VALUES ($1, $2, $3)
+      RETURNING *
+      `,
+            [id, email, name || null]
+        );
+
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        if (error.code === '23505') {
+            return res.status(409).json({
+                error: 'User with this email already exists',
+            });
         }
 
-        const duplicate = store.users.find((u) => u.email === email);
-        if (duplicate) {
-            const err = new Error('A user with this email already exists.');
-            err.status = 409;
-            return next(err);
-        }
-
-        const user = {
-            id: uuidv4(),
-            name: name.trim(),
-            email: email.trim().toLowerCase(),
-            createdAt: new Date().toISOString(),
-        };
-
-        store.users.push(user);
-        return res.status(201).json(user);
-    } catch (err) {
-        return next(err);
+        next(error);
     }
 });
 
-// GET /users
-router.get('/', (req, res) => {
-    res.json({
-        count: store.users.length,
-        users: store.users,
-    });
+// Get all users
+router.get('/', async (req, res, next) => {
+    try {
+        const result = await pool.query(
+            `
+      SELECT *
+      FROM users
+      ORDER BY created_at DESC
+      `
+        );
+
+        res.json(result.rows);
+    } catch (error) {
+        next(error);
+    }
 });
 
 module.exports = router;
