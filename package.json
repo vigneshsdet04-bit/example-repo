@@ -1,20 +1,35 @@
 {
-  "name": "example-repo",
+  "name": "aws-devops-api",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Production-style Node.js REST API for AWS DevOps learning",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
   },
   "repository": {
     "type": "git",
     "url": "git@github-testing:vigneshsdet04-bit/example-repo.git"
   },
-  "keywords": [],
+  "keywords": [
+    "nodejs",
+    "express",
+    "rest-api",
+    "aws",
+    "devops"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "express": "^5.2.1"
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.2.1",
+    "morgan": "^1.10.0",
+    "multer": "^2.0.1",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
   }
 }
