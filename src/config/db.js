@@ -1,6 +1,8 @@
 'use strict';
 
-const { Pool } = require('pg');
+const pg = require('pg');
+
+const Pool = pg.Pool;
 
 const pool = new Pool({
     host: process.env.DB_HOST,
