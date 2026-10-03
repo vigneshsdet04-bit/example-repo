@@ -1,3 +1,5 @@
+'use strict';
+
 const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
@@ -23,58 +25,69 @@ async function migrate() {
 
     await client.connect();
 
-    try {
-        await client.query(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        filename VARCHAR(255) PRIMARY KEY,
-        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
+    for (const file of files) {
+        const alreadyApplied = await client.query(
+            'SELECT 1 FROM schema_migrations WHERE filename = $1',
+            [file]
+        ).catch(async (error) => {
+            if (error.code === '42P01') {
+                await client.query(`
+          CREATE TABLE IF NOT EXISTS schema_migrations (
+            filename VARCHAR(255) PRIMARY KEY,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          );
+        `);
 
-        for (const file of files) {
-            const alreadyApplied = await client.query(
-                'SELECT 1 FROM schema_migrations WHERE filename = $1',
+                return { rowCount: 0 };
+            }
+
+            throw error;
+        });
+
+        if (alreadyApplied.rowCount > 0) {
+            console.log(`Skipping ${file} - already applied`);
+            continue;
+        }
+
+        console.log(`Applying ${file}...`);
+
+        const sql = fs.readFileSync(
+            path.join(migrationsDir, file),
+            'utf8'
+        );
+
+        try {
+            await client.query('BEGIN');
+
+            await client.query(sql);
+
+            await client.query(
+                'INSERT INTO schema_migrations (filename) VALUES ($1)',
                 [file]
             );
 
-            if (alreadyApplied.rowCount > 0) {
-                console.log(`Skipping ${file} - already applied`);
-                continue;
-            }
+            await client.query('COMMIT');
 
-            console.log(`Applying ${file}...`);
-
-            const sql = fs.readFileSync(
-                path.join(migrationsDir, file),
-                'utf8'
-            );
-
-            await client.query('BEGIN');
-
+            console.log(`Applied ${file}`);
+        } catch (error) {
             try {
-                await client.query(sql);
-
-                await client.query(
-                    'INSERT INTO schema_migrations (filename) VALUES ($1)',
-                    [file]
-                );
-
-                await client.query('COMMIT');
-
-                console.log(`Applied ${file}`);
-            } catch (error) {
                 await client.query('ROLLBACK');
-                throw error;
+            } catch (rollbackError) {
+                console.error('Rollback failed:', rollbackError.message);
             }
-        }
 
-        console.log('Database migration completed successfully.');
-    } finally {
-        client.end();
+            throw error;
+        }
     }
+
+    console.log('Database migration completed successfully.');
 }
 
-migrate().catch((error) => {
-    console.error('Migration failed:', error);
-    process.exit(1);
-});
+migrate()
+    .then(() => {
+        process.exit(0);
+    })
+    .catch((error) => {
+        console.error('Migration failed:', error);
+        process.exit(1);
+    });
