@@ -91,18 +91,10 @@ jobs:
 
     steps:
 
-      # ----------------------------------------------------------
-      # Download package created by package job
-      # ----------------------------------------------------------
-
       - name: Download deployment package
         uses: actions/download-artifact@v4
         with:
           name: deployment-package
-
-      # ----------------------------------------------------------
-      # Configure AWS OIDC
-      # ----------------------------------------------------------
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -110,10 +102,6 @@ jobs:
           role-to-assume: arn:aws:iam::785060333737:role/github-actions-deploy-role
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-${{ github.run_id }}
-
-      # ----------------------------------------------------------
-      # Upload package to S3
-      # ----------------------------------------------------------
 
       - name: Upload package to S3
         run: |
@@ -123,10 +111,6 @@ jobs:
 
           echo "Uploaded deployment:"
           echo "s3://${DEPLOY_BUCKET}/${DEPLOY_PREFIX}/${GITHUB_SHA}.tar.gz"
-
-      # ----------------------------------------------------------
-      # Find running ASG instances
-      # ----------------------------------------------------------
 
       - name: Get ASG instances
         id: instances
@@ -147,9 +131,10 @@ jobs:
 
           echo "instance_ids=$INSTANCE_IDS" >> "$GITHUB_OUTPUT"
 
-      # ----------------------------------------------------------
-      # Deploy application to all EC2 instances
-      # ----------------------------------------------------------
+
+      # ==========================================================
+      # Deploy application to EC2
+      # ==========================================================
 
       - name: Deploy application to EC2
         id: deployment
@@ -195,6 +180,16 @@ jobs:
 
               "tar -xzf /tmp/'${GITHUB_SHA}'.tar.gz -C /home/ssm-user/example-repo",
 
+              "echo Installing systemd service",
+
+              "cp /home/ssm-user/example-repo/deploy/devops-api.service /etc/systemd/system/devops-api.service",
+
+              "chmod 644 /etc/systemd/system/devops-api.service",
+
+              "systemctl daemon-reload",
+
+              "systemctl enable devops-api.service",
+
               "chown -R ssm-user:ssm-user /home/ssm-user/example-repo",
 
               "echo Installing production dependencies",
@@ -215,9 +210,10 @@ jobs:
 
           echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
 
-      # ----------------------------------------------------------
-      # Wait for deployment on all EC2 instances
-      # ----------------------------------------------------------
+
+      # ==========================================================
+      # Wait for deployment
+      # ==========================================================
 
       - name: Wait for EC2 deployment
         shell: bash
@@ -270,7 +266,6 @@ jobs:
                ! echo "$STATUSES" | grep -Eq 'Pending|InProgress|Delayed|Cancelling'; then
 
               echo "All EC2 deployments completed successfully."
-
               break
             fi
 
@@ -285,7 +280,7 @@ jobs:
 
 
       # ==========================================================
-      # 4. DATABASE MIGRATION
+      # DATABASE MIGRATION
       # ==========================================================
 
       - name: Run database migration
@@ -327,11 +322,8 @@ jobs:
             echo "Migration status: $STATUS"
 
             if [ "$STATUS" = "Success" ]; then
-
               echo "Database migration completed."
-
               exit 0
-
             fi
 
             if echo "$STATUS" | grep -Eq \
@@ -346,7 +338,6 @@ jobs:
                 --output json || true
 
               exit 1
-
             fi
 
             sleep 5
@@ -358,7 +349,7 @@ jobs:
 
 
       # ==========================================================
-      # 5. RESTART APPLICATION
+      # RESTART APPLICATION
       # ==========================================================
 
       - name: Restart application
@@ -431,7 +422,6 @@ jobs:
                ! echo "$STATUSES" | grep -Eq 'Pending|InProgress|Delayed|Cancelling'; then
 
               echo "Application restarted successfully."
-
               break
             fi
 
@@ -441,7 +431,7 @@ jobs:
 
 
       # ==========================================================
-      # 6. ALB HEALTH CHECK
+      # ALB HEALTH CHECK
       # ==========================================================
 
       - name: Check ALB health
@@ -472,5 +462,4 @@ jobs:
           done
 
           echo "ALB health check failed."
-
           exit 1

@@ -1,0 +1,21 @@
+[Unit]
+Description=DevOps Learning Node.js API
+After=network.target
+
+[Service]
+Type=simple
+User=ssm-user
+WorkingDirectory=/home/ssm-user/example-repo
+
+EnvironmentFile=/etc/devops-api.env
+
+Environment=NODE_ENV=production
+Environment=PORT=3000
+
+ExecStart=/home/ssm-user/versions/node/v20.20.2/bin/node /home/ssm-user/example-repo/src/server.js
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
