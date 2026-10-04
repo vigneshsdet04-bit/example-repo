@@ -16,9 +16,17 @@ env:
   ASG_NAME: devops-api-asg
   APP_DIR: /home/ssm-user/example-repo
   SERVICE_NAME: devops-api.service
+  SECRET_NAME: devops/rds/postgres
+  NODE_BIN: /home/ssm-user/versions/node/v20.20.2/bin
 
 jobs:
+
+  # ============================================================
+  # 1. TEST
+  # ============================================================
+
   test:
+    name: Test Application
     runs-on: ubuntu-latest
 
     steps:
@@ -37,7 +45,13 @@ jobs:
       - name: Run tests
         run: npm test --if-present
 
+
+  # ============================================================
+  # 2. PACKAGE
+  # ============================================================
+
   package:
+    name: Create Deployment Package
     needs: test
     runs-on: ubuntu-latest
 
@@ -56,24 +70,39 @@ jobs:
 
           mv /tmp/deployment.tar.gz deployment.tar.gz
 
+          echo "Deployment package created:"
+          ls -lh deployment.tar.gz
+
       - name: Upload deployment package
         uses: actions/upload-artifact@v4
         with:
           name: deployment-package
           path: deployment.tar.gz
 
+
+  # ============================================================
+  # 3. DEPLOY
+  # ============================================================
+
   deploy:
+    name: Deploy to AWS
     needs: package
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------
+      # Download package created by package job
+      # ----------------------------------------------------------
 
       - name: Download deployment package
         uses: actions/download-artifact@v4
         with:
           name: deployment-package
+
+      # ----------------------------------------------------------
+      # Configure AWS OIDC
+      # ----------------------------------------------------------
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -82,14 +111,26 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-${{ github.run_id }}
 
+      # ----------------------------------------------------------
+      # Upload package to S3
+      # ----------------------------------------------------------
+
       - name: Upload package to S3
         run: |
           aws s3 cp \
             deployment.tar.gz \
             s3://${DEPLOY_BUCKET}/${DEPLOY_PREFIX}/${GITHUB_SHA}.tar.gz
 
+          echo "Uploaded deployment:"
+          echo "s3://${DEPLOY_BUCKET}/${DEPLOY_PREFIX}/${GITHUB_SHA}.tar.gz"
+
+      # ----------------------------------------------------------
+      # Find running ASG instances
+      # ----------------------------------------------------------
+
       - name: Get ASG instances
         id: instances
+        shell: bash
         run: |
           INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
             --auto-scaling-group-names "${ASG_NAME}" \
@@ -97,48 +138,100 @@ jobs:
             --output text)
 
           if [ -z "$INSTANCE_IDS" ]; then
-            echo "No InService instances found."
+            echo "ERROR: No InService ASG instances found."
             exit 1
           fi
 
-          echo "Instances: $INSTANCE_IDS"
+          echo "ASG instances:"
+          echo "$INSTANCE_IDS"
+
           echo "instance_ids=$INSTANCE_IDS" >> "$GITHUB_OUTPUT"
 
+      # ----------------------------------------------------------
+      # Deploy application to all EC2 instances
+      # ----------------------------------------------------------
+
       - name: Deploy application to EC2
-        id: deploy
+        id: deployment
+        shell: bash
         run: |
+
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids ${{ steps.instances.outputs.instance_ids }} \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy ${GITHUB_SHA}" \
             --parameters 'commands=[
               "set -e",
-              "export PATH=\"/home/ssm-user/versions/node/v20.20.2/bin:$PATH\"",
               "export DEBIAN_FRONTEND=noninteractive",
-              "if ! command -v aws >/dev/null 2>&1; then sudo apt-get update -y && sudo apt-get install -y awscli; fi",
-              "mkdir -p /home/ssm-user/deployments/'${GITHUB_SHA}'",
+              "export PATH=/home/ssm-user/versions/node/v20.20.2/bin:$PATH",
+
+              "echo Starting deployment",
+
+              "if ! command -v aws >/dev/null 2>&1; then apt-get update -y && apt-get install -y awscli; fi",
+
+              "echo Downloading deployment package",
+
               "aws s3 cp s3://devops-api-deploy-785060333737/deployments/'${GITHUB_SHA}'.tar.gz /tmp/'${GITHUB_SHA}'.tar.gz",
-              "find /home/ssm-user/example-repo -mindepth 1 -maxdepth 1 ! -name uploads -exec rm -rf {} +",
-              "tar -xzf /tmp/'${GITHUB_SHA}'.tar.gz -C /home/ssm-user/example-repo",
+
+              "echo Downloading database secret",
+
+              "aws secretsmanager get-secret-value --secret-id devops/rds/postgres --query SecretString --output text > /tmp/db-secret.json",
+
+              "echo Creating database environment file",
+
+              "python3 -c '\''import json; d=json.load(open(\"/tmp/db-secret.json\")); open(\"/etc/devops-api.env\",\"w\").write(\"DB_HOST=\" + d[\"DB_HOST\"] + \"\\nDB_PORT=\" + d[\"DB_PORT\"] + \"\\nDB_USER=\" + d[\"DB_USER\"] + \"\\nDB_NAME=\" + d[\"DB_NAME\"] + \"\\nDB_PASSWORD=\" + d[\"DB_PASSWORD\"] + \"\\n\")'\''",
+
+              "chmod 600 /etc/devops-api.env",
+
+              "rm -f /tmp/db-secret.json",
+
+              "echo Preparing application directory",
+
               "mkdir -p /home/ssm-user/example-repo/uploads",
+
+              "find /home/ssm-user/example-repo -mindepth 1 -maxdepth 1 ! -name uploads -exec rm -rf {} +",
+
+              "echo Extracting deployment package",
+
+              "tar -xzf /tmp/'${GITHUB_SHA}'.tar.gz -C /home/ssm-user/example-repo",
+
               "chown -R ssm-user:ssm-user /home/ssm-user/example-repo",
-              "cd /home/ssm-user/example-repo",
-              "npm ci --omit=dev",
-              "rm -f /tmp/'${GITHUB_SHA}'.tar.gz"
+
+              "echo Installing production dependencies",
+
+              "cd /home/ssm-user/example-repo && npm ci --omit=dev",
+
+              "rm -f /tmp/'${GITHUB_SHA}'.tar.gz",
+
+              "echo Application deployment completed"
             ]' \
             --max-concurrency "100%" \
             --max-errors "0" \
             --query 'Command.CommandId' \
             --output text)
 
+          echo "SSM deployment command:"
+          echo "$COMMAND_ID"
+
           echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for deployment
+      # ----------------------------------------------------------
+      # Wait for deployment on all EC2 instances
+      # ----------------------------------------------------------
+
+      - name: Wait for EC2 deployment
+        shell: bash
         run: |
-          COMMAND_ID="${{ steps.deploy.outputs.command_id }}"
+
+          COMMAND_ID="${{ steps.deployment.outputs.command_id }}"
           INSTANCE_IDS="${{ steps.instances.outputs.instance_ids }}"
 
+          EXPECTED=$(echo "$INSTANCE_IDS" | wc -w)
+
+          echo "Waiting for $EXPECTED instances..."
+
           for i in {1..60}; do
+
             STATUSES=$(aws ssm list-command-invocations \
               --command-id "$COMMAND_ID" \
               --details \
@@ -147,46 +240,84 @@ jobs:
 
             echo "Deployment status: $STATUSES"
 
-            if echo "$STATUSES" | grep -Eq 'Failed|TimedOut|Cancelled|Undeliverable|Terminated|AccessDenied|InvalidPlatform'; then
+            if echo "$STATUSES" | grep -Eq \
+              'Failed|TimedOut|Cancelled|Undeliverable|Terminated|AccessDenied|InvalidPlatform'; then
+
               echo "Deployment failed."
+
+              echo "Fetching command output..."
+
+              for INSTANCE_ID in $INSTANCE_IDS; do
+
+                echo "=========================================="
+                echo "Instance: $INSTANCE_ID"
+                echo "=========================================="
+
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query '{Status:Status,StandardOutput:StandardOutputContent,StandardError:StandardErrorContent}' \
+                  --output json || true
+
+              done
+
               exit 1
             fi
 
-            EXPECTED=$(echo "$INSTANCE_IDS" | wc -w)
             ACTUAL=$(echo "$STATUSES" | wc -w)
 
             if [ "$ACTUAL" -eq "$EXPECTED" ] && \
                ! echo "$STATUSES" | grep -Eq 'Pending|InProgress|Delayed|Cancelling'; then
-              echo "Deployment completed."
+
+              echo "All EC2 deployments completed successfully."
+
               break
             fi
 
+            if [ "$i" -eq 60 ]; then
+              echo "Deployment timed out."
+              exit 1
+            fi
+
             sleep 5
+
           done
 
+
+      # ==========================================================
+      # 4. DATABASE MIGRATION
+      # ==========================================================
+
       - name: Run database migration
+        shell: bash
         run: |
+
           FIRST_INSTANCE=$(echo "${{ steps.instances.outputs.instance_ids }}" | awk '{print $1}')
+
+          echo "Running migration on:"
+          echo "$FIRST_INSTANCE"
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$FIRST_INSTANCE" \
             --document-name "AWS-RunShellScript" \
-            --comment "Run database migration ${GITHUB_SHA}" \
+            --comment "Database migration ${GITHUB_SHA}" \
             --parameters 'commands=[
               "set -e",
-              "export PATH=\"/home/ssm-user/versions/node/v20.20.2/bin:$PATH\"",
+              "export PATH=/home/ssm-user/versions/node/v20.20.2/bin:$PATH",
               "set -a",
               ". /etc/devops-api.env",
               "set +a",
-              "cd ${APP_DIR}",
+              "cd /home/ssm-user/example-repo",
               "npm run db:migrate"
             ]' \
             --query 'Command.CommandId' \
             --output text)
 
-          echo "Migration command: $COMMAND_ID"
+          echo "Migration command:"
+          echo "$COMMAND_ID"
 
           for i in {1..60}; do
+
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id "$FIRST_INSTANCE" \
@@ -196,48 +327,150 @@ jobs:
             echo "Migration status: $STATUS"
 
             if [ "$STATUS" = "Success" ]; then
+
+              echo "Database migration completed."
+
               exit 0
+
             fi
 
-            if echo "$STATUS" | grep -Eq 'Failed|TimedOut|Cancelled|Undeliverable|Terminated|AccessDenied|InvalidPlatform'; then
+            if echo "$STATUS" | grep -Eq \
+              'Failed|TimedOut|Cancelled|Undeliverable|Terminated|AccessDenied|InvalidPlatform'; then
+
               echo "Database migration failed."
+
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "$FIRST_INSTANCE" \
+                --query '{Status:Status,StandardOutput:StandardOutputContent,StandardError:StandardErrorContent}' \
+                --output json || true
+
               exit 1
+
             fi
 
             sleep 5
+
           done
 
           echo "Migration timed out."
           exit 1
 
+
+      # ==========================================================
+      # 5. RESTART APPLICATION
+      # ==========================================================
+
       - name: Restart application
+        shell: bash
         run: |
-          aws ssm send-command \
+
+          COMMAND_ID=$(aws ssm send-command \
             --instance-ids ${{ steps.instances.outputs.instance_ids }} \
             --document-name "AWS-RunShellScript" \
             --comment "Restart API ${GITHUB_SHA}" \
             --parameters 'commands=[
               "set -e",
-              "sudo systemctl restart ${SERVICE_NAME}",
+
+              "echo Restarting application",
+
+              "systemctl restart devops-api.service",
+
               "sleep 5",
-              "sudo systemctl is-active --quiet ${SERVICE_NAME}",
-              "curl -fsS http://127.0.0.1:3000/health"
+
+              "systemctl is-active --quiet devops-api.service",
+
+              "echo Checking local health",
+
+              "curl -fsS http://127.0.0.1:3000/health",
+
+              "echo",
+
+              "echo Application restart successful"
             ]' \
             --max-concurrency "100%" \
-            --max-errors "0"
+            --max-errors "0" \
+            --query 'Command.CommandId' \
+            --output text)
 
-      - name: Check ALB health
-        run: |
-          for i in {1..12}; do
-            if curl -fsS http://devops-api-alb-526360884.us-east-2.elb.amazonaws.com/health; then
-              echo
-              echo "ALB health check passed."
-              exit 0
+          echo "Restart command:"
+          echo "$COMMAND_ID"
+
+          for i in {1..30}; do
+
+            STATUSES=$(aws ssm list-command-invocations \
+              --command-id "$COMMAND_ID" \
+              --details \
+              --query 'CommandInvocations[].Status' \
+              --output text || true)
+
+            echo "Restart status: $STATUSES"
+
+            if echo "$STATUSES" | grep -Eq \
+              'Failed|TimedOut|Cancelled|Undeliverable|Terminated|AccessDenied|InvalidPlatform'; then
+
+              echo "Application restart failed."
+
+              for INSTANCE_ID in ${{ steps.instances.outputs.instance_ids }}; do
+
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query '{Status:Status,StandardOutput:StandardOutputContent,StandardError:StandardErrorContent}' \
+                  --output json || true
+
+              done
+
+              exit 1
             fi
 
-            echo "Waiting for ALB..."
+            EXPECTED=$(echo "${{ steps.instances.outputs.instance_ids }}" | wc -w)
+            ACTUAL=$(echo "$STATUSES" | wc -w)
+
+            if [ "$ACTUAL" -eq "$EXPECTED" ] && \
+               ! echo "$STATUSES" | grep -Eq 'Pending|InProgress|Delayed|Cancelling'; then
+
+              echo "Application restarted successfully."
+
+              break
+            fi
+
             sleep 5
+
+          done
+
+
+      # ==========================================================
+      # 6. ALB HEALTH CHECK
+      # ==========================================================
+
+      - name: Check ALB health
+        shell: bash
+        run: |
+
+          ALB_URL="http://devops-api-alb-526360884.us-east-2.elb.amazonaws.com/health"
+
+          echo "Checking:"
+          echo "$ALB_URL"
+
+          for i in {1..12}; do
+
+            if curl -fsS "$ALB_URL"; then
+
+              echo
+              echo "=========================================="
+              echo "Deployment successful!"
+              echo "=========================================="
+
+              exit 0
+
+            fi
+
+            echo "ALB not ready yet..."
+            sleep 5
+
           done
 
           echo "ALB health check failed."
+
           exit 1
