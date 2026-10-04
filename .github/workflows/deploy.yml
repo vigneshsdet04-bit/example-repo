@@ -116,15 +116,15 @@ jobs:
               "export PATH=\"/home/ssm-user/versions/node/v20.20.2/bin:$PATH\"",
               "export DEBIAN_FRONTEND=noninteractive",
               "if ! command -v aws >/dev/null 2>&1; then sudo apt-get update -y && sudo apt-get install -y awscli; fi",
-              "mkdir -p /home/ssm-user/deployments/${GITHUB_SHA}",
-              "aws s3 cp s3://${DEPLOY_BUCKET}/${DEPLOY_PREFIX}/${GITHUB_SHA}.tar.gz /tmp/${GITHUB_SHA}.tar.gz",
-              "find ${APP_DIR} -mindepth 1 -maxdepth 1 ! -name uploads -exec rm -rf {} +",
-              "tar -xzf /tmp/${GITHUB_SHA}.tar.gz -C ${APP_DIR}",
-              "mkdir -p ${APP_DIR}/uploads",
-              "chown -R ssm-user:ssm-user ${APP_DIR}",
-              "cd ${APP_DIR}",
+              "mkdir -p /home/ssm-user/deployments/'${GITHUB_SHA}'",
+              "aws s3 cp s3://devops-api-deploy-785060333737/deployments/'${GITHUB_SHA}'.tar.gz /tmp/'${GITHUB_SHA}'.tar.gz",
+              "find /home/ssm-user/example-repo -mindepth 1 -maxdepth 1 ! -name uploads -exec rm -rf {} +",
+              "tar -xzf /tmp/'${GITHUB_SHA}'.tar.gz -C /home/ssm-user/example-repo",
+              "mkdir -p /home/ssm-user/example-repo/uploads",
+              "chown -R ssm-user:ssm-user /home/ssm-user/example-repo",
+              "cd /home/ssm-user/example-repo",
               "npm ci --omit=dev",
-              "rm -f /tmp/${GITHUB_SHA}.tar.gz"
+              "rm -f /tmp/'${GITHUB_SHA}'.tar.gz"
             ]' \
             --max-concurrency "100%" \
             --max-errors "0" \
